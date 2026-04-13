@@ -9,7 +9,7 @@
   "token_endpoint_auth_method": "none",
   "dpop_bound_access_tokens": true,
   "redirect_uris": [
-    "http://localhost",
-    "http://127.0.0.1"
+    "http://127.0.0.1",
+    "http://localhost"
   ]
 }
