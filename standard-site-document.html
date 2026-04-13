@@ -667,11 +667,9 @@ main.define("setup_sw", [], async () => {
 
   const atsw = await import("./atsw.js");
 
-  // Configure from the local client-metadata.json.
-  // Note: the client_id INSIDE that file must point to the publicly hosted
-  // version (e.g. raw.githubusercontent.com) so ATProto auth servers can
-  // fetch it. The local file is only used to read the config values.
-  const config = await atsw.configure("./client-metadata.json");
+  // Configure using the publicly hosted client-metadata.json on pfeif.garden.
+  // ATProto auth servers fetch this URL directly to validate the client.
+  const config = await atsw.configure("https://pfeif.garden/client-metadata.json");
 
   return { atsw, config };
 });
