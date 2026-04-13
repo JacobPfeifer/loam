@@ -72,7 +72,8 @@ async function generateDPoPKey() {
     true,
     ["sign"],
   );
-  const jwk = await crypto.subtle.exportKey("jwk", publicKey);
+  const { kty, crv, x, y } = await crypto.subtle.exportKey("jwk", publicKey);
+  const jwk = { kty, crv, x, y };
 
   return { privateKey, jwk };
 }
@@ -119,18 +120,19 @@ const MAX_DPOP_RETRIES = 2;
  */
 async function dpopPost(key, url, body, nonce) {
   let dpopNonce = nonce;
+  let lastRes;
   for (let attempts = 0; attempts < MAX_DPOP_RETRIES; attempts++) {
     const dpop = await createDPoP(key, "POST", url, dpopNonce);
-    const res = await fetch(url, {
+    lastRes = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", DPoP: dpop },
       body,
     });
-    dpopNonce = res.headers.get("dpop-nonce") ?? dpopNonce;
-    if (res.ok || !res.headers.get("dpop-nonce")) return { json: await res.json(), dpopNonce };
+    dpopNonce = lastRes.headers.get("dpop-nonce") ?? dpopNonce;
+    if (lastRes.ok || !lastRes.headers.get("dpop-nonce")) return { json: await lastRes.json(), dpopNonce };
   }
 
-  throw new Error("DPoP nonce retry failed");
+  return { json: await lastRes.json(), dpopNonce };
 }
 
 const DB_NAME = "atproto:oauth";
