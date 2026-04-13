@@ -71,6 +71,7 @@ class StandardSiteDocument extends HTMLElement {
           background: #f0f0ee;
           border-bottom: 1px solid #e5e5e5;
           font-size: 0.85rem;
+          flex-wrap: wrap;
         }
         .auth-bar label { color: #666; white-space: nowrap; }
         .auth-bar input {
@@ -101,6 +102,8 @@ class StandardSiteDocument extends HTMLElement {
           white-space: nowrap;
           max-width: 220px;
         }
+        .auth-bar .sep { width: 1px; background: #ccc; align-self: stretch; margin: 0 0.25rem; }
+        .auth-bar .auth-label { color: #aaa; font-size: 0.75rem; white-space: nowrap; }
 
         /* ── Publication bar ── */
         .pub-bar {
@@ -250,9 +253,15 @@ class StandardSiteDocument extends HTMLElement {
         <!-- Auth bar -->
         <div class="auth-bar" id="auth-bar">
           <span class="logged-out-ui" style="display:contents">
-            <label for="handle-input">ATProto handle</label>
-            <input id="handle-input" type="text" placeholder="you.bsky.social" autocomplete="username" />
-            <button id="login-btn">Connect</button>
+            <label for="handle-input">Handle</label>
+            <input id="handle-input" type="text" placeholder="you.bsky.social" autocomplete="username" style="max-width:180px" />
+            <div class="sep"></div>
+            <span class="auth-label">App password</span>
+            <input id="apppassword-input" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="current-password" style="max-width:180px" />
+            <button id="apppassword-btn">Connect</button>
+            <div class="sep"></div>
+            <span class="auth-label">or</span>
+            <button id="login-btn">OAuth</button>
           </span>
           <span class="logged-in-ui" style="display:none; contents:contents">
             <span class="logged-in">Connected</span>
@@ -338,10 +347,16 @@ class StandardSiteDocument extends HTMLElement {
       if (url) document.execCommand("createLink", false, url);
     });
 
-    // Login
+    // Login — OAuth
     sr.getElementById("login-btn").addEventListener("click", () => this._handleLogin());
     sr.getElementById("handle-input").addEventListener("keydown", e => {
       if (e.key === "Enter") this._handleLogin();
+    });
+
+    // Login — App password
+    sr.getElementById("apppassword-btn").addEventListener("click", () => this._handleAppPasswordLogin());
+    sr.getElementById("apppassword-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") this._handleAppPasswordLogin();
     });
 
     // Logout
@@ -414,6 +429,33 @@ class StandardSiteDocument extends HTMLElement {
       await this._atsw.logIn(this._config, handle);
       // logIn() redirects the browser — code after this won't run until the
       // user returns from the auth server and the page reloads.
+    } catch (err) {
+      this._setStatus(`Login failed: ${err.message}`, "error");
+    }
+  }
+
+  async _handleAppPasswordLogin() {
+    if (!this._atsw) {
+      this._setStatus("ATProto not initialized yet. Please wait.", "error");
+      return;
+    }
+    const handle = this.shadowRoot.getElementById("handle-input").value.trim();
+    const appPassword = this.shadowRoot.getElementById("apppassword-input").value.trim();
+    if (!handle) {
+      this._setStatus("Enter your ATProto handle.", "error");
+      return;
+    }
+    if (!appPassword) {
+      this._setStatus("Enter your app password.", "error");
+      return;
+    }
+    this._setStatus("Connecting…");
+    try {
+      const session = await this._atsw.appPasswordLogIn(handle, appPassword);
+      this._session = session;
+      this._showLoggedIn(session.did);
+      this._setStatus("Connected.", "success");
+      this.shadowRoot.getElementById("apppassword-input").value = "";
     } catch (err) {
       this._setStatus(`Login failed: ${err.message}`, "error");
     }

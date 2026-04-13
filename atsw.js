@@ -31,6 +31,7 @@
 
 /**
  * @typedef {Object} OAuthSession
+ * @property {"oauth"} authType
  * @property {string} pds
  * @property {string} did
  * @property {string} access_token
@@ -42,6 +43,18 @@
  * @property {string} [refresh_token]
  * @property {string} [dpopNonce]
  */
+
+/**
+ * @typedef {Object} AppPasswordSession
+ * @property {"apppassword"} authType
+ * @property {string} pds
+ * @property {string} did
+ * @property {string} access_token
+ * @property {number} expiresAt
+ * @property {string} [refresh_token]
+ */
+
+/** @typedef {OAuthSession | AppPasswordSession} AnySession */
 
 /**
  * @typedef {Object} AuthServerMetadata
@@ -248,6 +261,38 @@ export async function configure(metadataUrl) {
 }
 
 /**
+ * Sign in with an app password. Creates a session directly via
+ * com.atproto.server.createSession and stores it in IndexedDB.
+ * @param {string} handle
+ * @param {string} appPassword
+ * @returns {Promise<AppPasswordSession>}
+ */
+export async function appPasswordLogIn(handle, appPassword) {
+  const did = await resolveDID(handle);
+  const pds = await resolvePDS(did);
+
+  const res = await fetch(`${new URL(pds).origin}/xrpc/com.atproto.server.createSession`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ identifier: handle, password: appPassword }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.message || json.error || `createSession failed: ${res.status}`);
+
+  /** @type {AppPasswordSession} */
+  const session = {
+    authType: "apppassword",
+    pds: new URL(pds).origin,
+    did: json.did,
+    access_token: json.accessJwt,
+    expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour
+    refresh_token: json.refreshJwt,
+  };
+  await putSession(session);
+  return session;
+}
+
+/**
  * Start the OAuth login flow. Stores an authing session in IndexedDB and
  * redirects the browser to the authorization server. When the auth server
  * redirects back, the service worker will intercept the callback and complete
@@ -284,7 +329,7 @@ export async function logIn(config, handle) {
     state,
     code_challenge: pkce.challenge,
     code_challenge_method: "S256",
-    login_hint: did,
+    login_hint: handle,
   });
 
   const { json: parJson } = await dpopPost(
@@ -345,6 +390,7 @@ async function callback(authing, code, state) {
 
   /** @type {OAuthSession} */
   const session = {
+    authType: "oauth",
     pds: authing.pds,
     did: authing.did,
     access_token: tokenJson.access_token,
@@ -364,9 +410,22 @@ async function callback(authing, code, state) {
   return Response.redirect(dest.href, 302);
 }
 
-/** @param {OAuthSession} session */
+/** @param {AnySession} session */
 async function refresh(session) {
   if (!session.refresh_token) throw new Error("No refresh_token in session");
+
+  if (session.authType === "apppassword") {
+    const res = await fetch(`${session.pds}/xrpc/com.atproto.server.refreshSession`, {
+      method: "POST",
+      headers: { "authorization": `Bearer ${session.refresh_token}` },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.message || json.error || "Refresh failed");
+    session.access_token = json.accessJwt;
+    session.expiresAt = Date.now() + 60 * 60 * 1000;
+    if (json.refreshJwt) session.refresh_token = json.refreshJwt;
+    return;
+  }
 
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -389,15 +448,16 @@ async function refresh(session) {
 }
 
 /**
- * Intercept requests to any PDS we have a session for, adding DPoP and
- * Authorization headers. Pass through everything else unchanged.
+ * Intercept requests to any PDS we have a session for, adding auth headers.
+ * Uses DPoP for OAuth sessions and Bearer for app password sessions.
+ * Pass through everything else unchanged.
  * @param {Request} req
  */
 async function authedFetch(req) {
   const url = new URL(req.url);
   const did = req.headers.get("x-atsw-did");
 
-  /** @type {OAuthSession | undefined} */
+  /** @type {AnySession | undefined} */
   let session;
   if (did) session = await getSession(did);
   else {
@@ -414,6 +474,15 @@ async function authedFetch(req) {
     await putSession(session);
   }
 
+  // App password: plain Bearer token, no DPoP
+  if (session.authType === "apppassword") {
+    const headers = new Headers(req.headers);
+    headers.delete("x-atsw-did");
+    headers.set("authorization", `Bearer ${session.access_token}`);
+    return fetch(new Request(req, { headers }));
+  }
+
+  // OAuth: DPoP-bound token with nonce retry
   const htu = url.origin + url.pathname;
   const htm = req.method;
   const ath = b64url(await crypto.subtle.digest("SHA-256", enc.encode(session.access_token)));
