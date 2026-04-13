@@ -284,7 +284,7 @@ export async function logIn(config, handle) {
     state,
     code_challenge: pkce.challenge,
     code_challenge_method: "S256",
-    login_hint: handle,
+    login_hint: did,
   });
 
   const { json: parJson } = await dpopPost(
