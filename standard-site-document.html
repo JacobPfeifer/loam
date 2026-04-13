@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Standard.site Document — Loam</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f8f7f4;
+      color: #1a1a1a;
+      min-height: 100vh;
+    }
+    #notebook { padding: 2rem; max-width: 900px; margin: 0 auto; }
+    #notebook > div { margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+<div id="notebook"></div>
+
+<script>
+// ─── StandardSiteDocument web component ──────────────────────────────────────
+// Defined before the Observable Runtime boots so it's available when cells run.
+
+class StandardSiteDocument extends HTMLElement {
+  constructor() {
+    super();
+    this._atsw = null;
+    this._config = null;
+    this._db = null;
+    this._session = null;
+    this._firstPublishedAt = null;
+    this._saveTimer = null;
+    this._turndown = null;
+    this.attachShadow({ mode: "open" });
+  }
+
+  connectedCallback() {
+    this._render();
+    this._loadTurndown().then(() => {
+      this._initFromStorage();
+    });
+  }
+
+  async _loadTurndown() {
+    if (this._turndown) return;
+    const mod = await import("https://cdn.jsdelivr.net/npm/turndown@7/+esm");
+    const TurndownService = mod.default;
+    this._turndown = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
+  }
+
+  _render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; font-family: system-ui, -apple-system, sans-serif; }
+
+        .container {
+          background: #fff;
+          border: 1px solid #e5e5e5;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+
+        /* ── Auth bar ── */
+        .auth-bar {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          background: #f0f0ee;
+          border-bottom: 1px solid #e5e5e5;
+          font-size: 0.85rem;
+        }
+        .auth-bar label { color: #666; white-space: nowrap; }
+        .auth-bar input {
+          flex: 1;
+          border: 1px solid #ccc;
+          border-radius: 4px;
+          padding: 0.3rem 0.5rem;
+          font-size: 0.85rem;
+          min-width: 0;
+        }
+        .auth-bar button {
+          white-space: nowrap;
+          padding: 0.3rem 0.75rem;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          background: #fff;
+          cursor: pointer;
+          font-size: 0.85rem;
+        }
+        .auth-bar button:hover { background: #f5f5f5; }
+        .auth-bar .logged-in { color: #2a7a2a; font-weight: 500; }
+        .auth-bar .did-display {
+          font-family: monospace;
+          font-size: 0.78rem;
+          color: #555;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 220px;
+        }
+
+        /* ── Publication bar ── */
+        .pub-bar {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.5rem 1rem;
+          background: #f8f7f4;
+          border-bottom: 1px solid #e5e5e5;
+          font-size: 0.82rem;
+        }
+        .pub-bar label { color: #888; white-space: nowrap; }
+        .pub-bar input {
+          flex: 1;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          padding: 0.25rem 0.5rem;
+          font-size: 0.8rem;
+          font-family: monospace;
+          color: #444;
+          min-width: 0;
+        }
+        .pub-bar .hint { color: #aaa; font-size: 0.78rem; }
+
+        /* ── Meta fields ── */
+        .meta {
+          padding: 0.75rem 1rem 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.4rem;
+        }
+        .meta input {
+          border: none;
+          border-bottom: 1px solid transparent;
+          padding: 0.2rem 0;
+          font-size: inherit;
+          width: 100%;
+          background: transparent;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .meta input:focus { border-bottom-color: #bbb; }
+        .title-input {
+          font-size: 1.6rem !important;
+          font-weight: 700;
+          color: #111;
+        }
+        .title-input::placeholder { color: #ccc; }
+        .meta-row {
+          display: flex;
+          gap: 1rem;
+        }
+        .meta-row input { color: #888; font-size: 0.82rem; }
+        .meta-row input::placeholder { color: #ccc; }
+
+        /* ── Toolbar ── */
+        .toolbar {
+          display: flex;
+          gap: 2px;
+          padding: 0.5rem 0.75rem;
+          border-bottom: 1px solid #e5e5e5;
+          flex-wrap: wrap;
+        }
+        .toolbar button {
+          border: none;
+          background: transparent;
+          cursor: pointer;
+          padding: 0.25rem 0.45rem;
+          border-radius: 3px;
+          font-size: 0.85rem;
+          color: #444;
+          line-height: 1;
+        }
+        .toolbar button:hover { background: #f0f0ee; }
+        .toolbar .sep { width: 1px; background: #e5e5e5; margin: 0 4px; align-self: stretch; }
+
+        /* ── Editor ── */
+        .editor {
+          padding: 1rem;
+          min-height: 400px;
+          outline: none;
+          font-size: 1rem;
+          line-height: 1.7;
+          color: #1a1a1a;
+        }
+        .editor:empty::before {
+          content: attr(data-placeholder);
+          color: #ccc;
+          pointer-events: none;
+        }
+        .editor h1 { font-size: 1.5rem; margin: 1rem 0 0.5rem; }
+        .editor h2 { font-size: 1.2rem; margin: 0.8rem 0 0.4rem; }
+        .editor p { margin-bottom: 0.5rem; }
+        .editor ul, .editor ol { padding-left: 1.5rem; margin-bottom: 0.5rem; }
+        .editor a { color: #2563eb; }
+        .editor hr { border: none; border-top: 1px solid #e5e5e5; margin: 1rem 0; }
+        .editor blockquote {
+          border-left: 3px solid #e5e5e5;
+          padding-left: 1rem;
+          color: #666;
+          margin: 0.5rem 0;
+        }
+
+        /* ── Actions ── */
+        .actions {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          border-top: 1px solid #e5e5e5;
+          background: #f8f7f4;
+        }
+        .btn-save {
+          padding: 0.4rem 0.9rem;
+          border: 1px solid #ccc;
+          border-radius: 4px;
+          background: #fff;
+          cursor: pointer;
+          font-size: 0.85rem;
+        }
+        .btn-save:hover { background: #f0f0ee; }
+        .btn-publish {
+          padding: 0.4rem 0.9rem;
+          border: 1px solid #2563eb;
+          border-radius: 4px;
+          background: #2563eb;
+          color: #fff;
+          cursor: pointer;
+          font-size: 0.85rem;
+          font-weight: 500;
+        }
+        .btn-publish:hover { background: #1d4ed8; }
+        .btn-publish:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status {
+          margin-left: auto;
+          font-size: 0.78rem;
+          color: #888;
+        }
+        .status a { color: #2563eb; text-decoration: none; }
+        .status a:hover { text-decoration: underline; }
+        .status.error { color: #dc2626; }
+        .status.success { color: #16a34a; }
+      </style>
+
+      <div class="container">
+
+        <!-- Auth bar -->
+        <div class="auth-bar" id="auth-bar">
+          <span class="logged-out-ui" style="display:contents">
+            <label for="handle-input">ATProto handle</label>
+            <input id="handle-input" type="text" placeholder="you.bsky.social" autocomplete="username" />
+            <button id="login-btn">Connect</button>
+          </span>
+          <span class="logged-in-ui" style="display:none; contents:contents">
+            <span class="logged-in">Connected</span>
+            <span class="did-display" id="did-display"></span>
+            <button id="logout-btn">Disconnect</button>
+          </span>
+        </div>
+
+        <!-- Publication AT-URI -->
+        <div class="pub-bar">
+          <label for="pub-input">Publication</label>
+          <input id="pub-input" type="text"
+            placeholder="at://did:plc:.../site.standard.publication/self" />
+          <span class="hint" title="Create a publication at standard.site first, then paste its AT-URI here">?</span>
+        </div>
+
+        <!-- Document metadata -->
+        <div class="meta">
+          <input class="title-input" id="title-input" type="text" placeholder="Untitled" maxlength="500" />
+          <div class="meta-row">
+            <input id="path-input" type="text" placeholder="/post-slug" style="flex:0 0 160px" />
+            <input id="desc-input" type="text" placeholder="Short description" />
+            <input id="tags-input" type="text" placeholder="tag1, tag2" style="flex:0 0 180px" />
+          </div>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="toolbar">
+          <button data-cmd="bold" title="Bold (⌘B)"><b>B</b></button>
+          <button data-cmd="italic" title="Italic (⌘I)"><i>I</i></button>
+          <div class="sep"></div>
+          <button data-cmd="formatBlock" data-val="h1" title="Heading 1">H1</button>
+          <button data-cmd="formatBlock" data-val="h2" title="Heading 2">H2</button>
+          <div class="sep"></div>
+          <button data-cmd="insertUnorderedList" title="Bullet list">• List</button>
+          <button data-cmd="insertOrderedList" title="Numbered list">1. List</button>
+          <div class="sep"></div>
+          <button id="link-btn" title="Insert link">Link</button>
+          <button data-cmd="formatBlock" data-val="blockquote" title="Blockquote">" Quote</button>
+          <button data-cmd="insertHorizontalRule" title="Horizontal rule">—</button>
+        </div>
+
+        <!-- Editor -->
+        <div class="editor"
+          id="editor"
+          contenteditable="true"
+          role="textbox"
+          aria-multiline="true"
+          data-placeholder="Start writing…"
+          spellcheck="true">
+        </div>
+
+        <!-- Actions -->
+        <div class="actions">
+          <button class="btn-save" id="save-btn">Save locally</button>
+          <button class="btn-publish" id="publish-btn">Publish to Standard.site</button>
+          <span class="status" id="status"></span>
+        </div>
+
+      </div>
+    `;
+
+    this._bindEvents();
+  }
+
+  _bindEvents() {
+    const sr = this.shadowRoot;
+
+    // Toolbar
+    sr.querySelectorAll("[data-cmd]").forEach(btn => {
+      btn.addEventListener("mousedown", e => {
+        e.preventDefault();
+        const cmd = btn.dataset.cmd;
+        const val = btn.dataset.val || null;
+        document.execCommand(cmd, false, val);
+      });
+    });
+
+    // Link
+    sr.getElementById("link-btn").addEventListener("mousedown", e => {
+      e.preventDefault();
+      const url = prompt("URL:");
+      if (url) document.execCommand("createLink", false, url);
+    });
+
+    // Login
+    sr.getElementById("login-btn").addEventListener("click", () => this._handleLogin());
+    sr.getElementById("handle-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") this._handleLogin();
+    });
+
+    // Logout
+    sr.getElementById("logout-btn").addEventListener("click", () => this._handleLogout());
+
+    // Save / Publish
+    sr.getElementById("save-btn").addEventListener("click", () => this._handleSave());
+    sr.getElementById("publish-btn").addEventListener("click", () => this._handlePublish());
+
+    // Auto-save on input (debounced)
+    const debouncedSave = this._debounce(() => this._handleSave(true), 2000);
+    sr.getElementById("editor").addEventListener("input", debouncedSave);
+    ["title-input", "path-input", "desc-input", "tags-input", "pub-input"].forEach(id => {
+      sr.getElementById(id).addEventListener("input", debouncedSave);
+    });
+  }
+
+  async _initFromStorage() {
+    // Check for existing ATProto session
+    if (this._atsw) {
+      try {
+        const sessions = await this._atsw.listSessions();
+        if (sessions.length > 0) {
+          this._session = sessions[0];
+          this._showLoggedIn(this._session.did);
+        }
+      } catch (err) {
+        console.warn("Could not load ATProto sessions:", err);
+      }
+    }
+
+    // Restore saved document from IndexedDB
+    if (this._db) {
+      try {
+        const doc = await this._db.documents.get("current");
+        if (doc) {
+          const sr = this.shadowRoot;
+          if (doc.title) sr.getElementById("title-input").value = doc.title;
+          if (doc.html) sr.getElementById("editor").innerHTML = doc.html;
+          if (doc.path) sr.getElementById("path-input").value = doc.path;
+          if (doc.description) sr.getElementById("desc-input").value = doc.description;
+          if (doc.tags) sr.getElementById("tags-input").value = doc.tags.join(", ");
+          if (doc.publication) sr.getElementById("pub-input").value = doc.publication;
+          if (doc.firstPublishedAt) this._firstPublishedAt = doc.firstPublishedAt;
+          if (doc.atUri) {
+            this._setStatus(
+              `Last published: <a href="https://standard.site/at?uri=${encodeURIComponent(doc.atUri)}" target="_blank">${doc.atUri}</a>`,
+              "success"
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("Could not restore document:", err);
+      }
+    }
+  }
+
+  async _handleLogin() {
+    if (!this._atsw || !this._config) {
+      this._setStatus("ATProto not initialized yet. Please wait.", "error");
+      return;
+    }
+    const handle = this.shadowRoot.getElementById("handle-input").value.trim();
+    if (!handle) {
+      this._setStatus("Enter your ATProto handle.", "error");
+      return;
+    }
+    this._setStatus("Connecting…");
+    try {
+      await this._atsw.logIn(this._config, handle);
+      // logIn() redirects the browser — code after this won't run until the
+      // user returns from the auth server and the page reloads.
+    } catch (err) {
+      this._setStatus(`Login failed: ${err.message}`, "error");
+    }
+  }
+
+  async _handleLogout() {
+    if (this._session && this._atsw) {
+      await this._atsw.logOut(this._session.did);
+      this._session = null;
+    }
+    this._showLoggedOut();
+    this._setStatus("Disconnected.");
+  }
+
+  _showLoggedIn(did) {
+    const sr = this.shadowRoot;
+    sr.querySelector(".logged-out-ui").style.display = "none";
+    sr.querySelector(".logged-in-ui").style.display = "contents";
+    sr.getElementById("did-display").textContent = did;
+  }
+
+  _showLoggedOut() {
+    const sr = this.shadowRoot;
+    sr.querySelector(".logged-out-ui").style.display = "contents";
+    sr.querySelector(".logged-in-ui").style.display = "none";
+    sr.getElementById("did-display").textContent = "";
+  }
+
+  async _handleSave(silent = false) {
+    if (!this._db) return;
+    const sr = this.shadowRoot;
+    const title = sr.getElementById("title-input").value.trim();
+    const html = sr.getElementById("editor").innerHTML;
+    const path = sr.getElementById("path-input").value.trim();
+    const description = sr.getElementById("desc-input").value.trim();
+    const tags = sr.getElementById("tags-input").value
+      .split(",").map(t => t.trim()).filter(Boolean);
+    const publication = sr.getElementById("pub-input").value.trim();
+    const now = new Date().toISOString();
+
+    try {
+      const existing = await this._db.documents.get("current");
+      await this._db.documents.put({
+        id: "current",
+        title,
+        html,
+        path,
+        description,
+        tags,
+        publication,
+        updatedAt: now,
+        firstPublishedAt: this._firstPublishedAt || existing?.firstPublishedAt,
+        atUri: existing?.atUri,
+        rkey: existing?.rkey,
+      });
+      if (!silent) {
+        this._setStatus("Saved locally.");
+      } else {
+        const statusEl = sr.getElementById("status");
+        if (!statusEl.classList.contains("success")) {
+          this._setStatus(`Saved ${new Date().toLocaleTimeString()}`);
+        }
+      }
+    } catch (err) {
+      if (!silent) this._setStatus(`Save failed: ${err.message}`, "error");
+    }
+  }
+
+  async _handlePublish() {
+    if (!this._atsw) {
+      this._setStatus("ATProto not initialized.", "error");
+      return;
+    }
+
+    // Refresh session list in case we just returned from OAuth
+    const sessions = await this._atsw.listSessions();
+    if (sessions.length === 0) {
+      this._setStatus("Not connected. Please authenticate first.", "error");
+      return;
+    }
+    this._session = sessions[0];
+    this._showLoggedIn(this._session.did);
+
+    const sr = this.shadowRoot;
+    const title = sr.getElementById("title-input").value.trim();
+    if (!title) {
+      this._setStatus("A title is required before publishing.", "error");
+      return;
+    }
+
+    const publication = sr.getElementById("pub-input").value.trim();
+    if (!publication) {
+      this._setStatus("Enter your Publication AT-URI (create one at standard.site first).", "error");
+      return;
+    }
+
+    await this._loadTurndown();
+
+    const editorEl = sr.getElementById("editor");
+    const html = editorEl.innerHTML;
+    const textContent = editorEl.innerText;
+    const descInput = sr.getElementById("desc-input").value.trim();
+    const description = descInput || textContent.slice(0, 300);
+    const pathInput = sr.getElementById("path-input").value.trim();
+    const path = pathInput || "/" + this._slugify(title);
+    const tags = sr.getElementById("tags-input").value
+      .split(",").map(t => t.trim()).filter(Boolean);
+
+    const markdown = this._turndown.turndown(html);
+    const now = new Date().toISOString();
+    const rkey = this._slugify(title);
+
+    if (!this._firstPublishedAt) this._firstPublishedAt = now;
+
+    const record = {
+      "$type": "site.standard.document",
+      site: publication,
+      title: title.slice(0, 500),
+      publishedAt: this._firstPublishedAt,
+      updatedAt: now,
+      content: {
+        "$type": "at.markpub.markdown",
+        text: {
+          "$type": "at.markpub.text",
+          markdown,
+        },
+      },
+      textContent,
+      description,
+      path,
+    };
+    if (tags.length) record.tags = tags;
+
+    const publishBtn = sr.getElementById("publish-btn");
+    publishBtn.disabled = true;
+    this._setStatus("Publishing…");
+
+    try {
+      const res = await fetch(`${this._session.pds}/xrpc/com.atproto.repo.putRecord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-atsw-did": this._session.did,
+        },
+        body: JSON.stringify({
+          repo: this._session.did,
+          collection: "site.standard.document",
+          rkey,
+          record,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: res.statusText }));
+        throw new Error(err.message || JSON.stringify(err));
+      }
+
+      const atUri = `at://${this._session.did}/site.standard.document/${rkey}`;
+      const viewerUrl = `https://standard.site/at?uri=${encodeURIComponent(atUri)}`;
+
+      // Persist publish metadata
+      await this._handleSave(true);
+      const existing = await this._db.documents.get("current");
+      await this._db.documents.put({
+        ...existing,
+        atUri,
+        rkey,
+        firstPublishedAt: this._firstPublishedAt,
+      });
+
+      this._setStatus(
+        `Published: <a href="${viewerUrl}" target="_blank">${atUri}</a>`,
+        "success"
+      );
+    } catch (err) {
+      this._setStatus(`Publish failed: ${err.message}`, "error");
+    } finally {
+      publishBtn.disabled = false;
+    }
+  }
+
+  _setStatus(html, type = "") {
+    const el = this.shadowRoot.getElementById("status");
+    el.innerHTML = html;
+    el.className = "status" + (type ? " " + type : "");
+  }
+
+  _slugify(str) {
+    return str
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/[\s_]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 512) || "untitled";
+  }
+
+  _debounce(fn, ms) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), ms);
+    };
+  }
+}
+</script>
+
+<script type="module">
+// ─── Observable Runtime bootstrap ────────────────────────────────────────────
+
+import { Runtime } from "https://cdn.jsdelivr.net/npm/@observablehq/runtime@6/dist/runtime.js";
+
+const runtime = new Runtime();
+const main = runtime.module();
+const notebook = document.getElementById("notebook");
+
+// Mount a cell: appends a div to #notebook and renders fulfilled DOM nodes into it.
+function mount(name, deps, fn) {
+  const wrapper = document.createElement("div");
+  notebook.appendChild(wrapper);
+  main.variable({
+    fulfilled(value) {
+      if (value instanceof Node) wrapper.replaceChildren(value);
+      else if (value != null && !(value instanceof Promise)) {
+        const pre = document.createElement("pre");
+        pre.style.cssText = "font-size:0.75rem;color:#888;padding:0.5rem";
+        pre.textContent = String(value);
+        wrapper.replaceChildren(pre);
+      }
+    },
+    rejected(err) {
+      const msg = document.createElement("div");
+      msg.style.cssText = "color:red;font-size:0.85rem;padding:0.5rem;font-family:monospace";
+      msg.textContent = `[${name}] ${err.message}`;
+      wrapper.replaceChildren(msg);
+      console.error(`Cell "${name}" failed:`, err);
+    },
+    pending() {},
+  }).define(name, deps, fn);
+}
+
+// ─── Cell: setup_sw ───────────────────────────────────────────────────────────
+// Registers atsw.js as a service worker and configures OAuth.
+main.define("setup_sw", [], async () => {
+  if (!("serviceWorker" in navigator)) {
+    throw new Error("Service workers are not supported. Please use a modern browser over HTTP (not file://).");
+  }
+
+  await navigator.serviceWorker.register("./atsw.js", { type: "module" });
+  await navigator.serviceWorker.ready;
+
+  const atsw = await import("./atsw.js");
+
+  // Configure from the local client-metadata.json.
+  // Note: the client_id INSIDE that file must point to the publicly hosted
+  // version (e.g. raw.githubusercontent.com) so ATProto auth servers can
+  // fetch it. The local file is only used to read the config values.
+  const config = await atsw.configure("./client-metadata.json");
+
+  return { atsw, config };
+});
+
+// ─── Cell: db ────────────────────────────────────────────────────────────────
+// Opens an IndexedDB database via Dexie for local document persistence.
+main.define("db", [], async () => {
+  const { Dexie } = await import("https://cdn.jsdelivr.net/npm/dexie@4/+esm");
+  const db = new Dexie("loam_documents");
+  db.version(1).stores({ documents: "id, title, updatedAt" });
+  return db;
+});
+
+// ─── Cell: editor ────────────────────────────────────────────────────────────
+// Instantiates the <standard-site-document> web component and wires it up.
+mount("editor", ["setup_sw", "db"], (setup_sw, db) => {
+  if (!customElements.get("standard-site-document")) {
+    customElements.define("standard-site-document", StandardSiteDocument);
+  }
+
+  const el = document.createElement("standard-site-document");
+  el._atsw = setup_sw.atsw;
+  el._config = setup_sw.config;
+  el._db = db;
+  return el;
+});
+</script>
+</body>
+</html>
