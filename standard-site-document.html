@@ -126,7 +126,17 @@ class StandardSiteDocument extends HTMLElement {
           color: #444;
           min-width: 0;
         }
-        .pub-bar .hint { color: #aaa; font-size: 0.78rem; }
+        .pub-bar button {
+          white-space: nowrap;
+          padding: 0.2rem 0.6rem;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          background: #fff;
+          cursor: pointer;
+          font-size: 0.8rem;
+          color: #555;
+        }
+        .pub-bar button:hover { background: #f0f0ee; }
 
         /* ── Meta fields ── */
         .meta {
@@ -275,7 +285,7 @@ class StandardSiteDocument extends HTMLElement {
           <label for="pub-input">Publication</label>
           <input id="pub-input" type="text"
             placeholder="at://did:plc:.../site.standard.publication/self" />
-          <span class="hint" title="Create a publication at standard.site first, then paste its AT-URI here">?</span>
+          <button id="create-pub-btn" title="Create a new publication record in your ATProto repo">Create publication…</button>
         </div>
 
         <!-- Document metadata -->
@@ -361,6 +371,9 @@ class StandardSiteDocument extends HTMLElement {
 
     // Logout
     sr.getElementById("logout-btn").addEventListener("click", () => this._handleLogout());
+
+    // Create publication
+    sr.getElementById("create-pub-btn").addEventListener("click", () => this._handleCreatePublication());
 
     // Save / Publish
     sr.getElementById("save-btn").addEventListener("click", () => this._handleSave());
@@ -521,6 +534,52 @@ class StandardSiteDocument extends HTMLElement {
       }
     } catch (err) {
       if (!silent) this._setStatus(`Save failed: ${err.message}`, "error");
+    }
+  }
+
+  async _handleCreatePublication() {
+    const sessions = await this._atsw.listSessions();
+    if (sessions.length === 0) {
+      this._setStatus("Not connected. Please authenticate first.", "error");
+      return;
+    }
+    const session = sessions[0];
+
+    const name = prompt("Publication name:", "My Site");
+    if (!name) return;
+    const url = prompt("Base URL for your site (no trailing slash):", "https://pfeif.garden");
+    if (!url) return;
+
+    this._setStatus("Creating publication…");
+    try {
+      const res = await fetch(`${session.pds}/xrpc/com.atproto.repo.putRecord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-atsw-did": session.did,
+        },
+        body: JSON.stringify({
+          repo: session.did,
+          collection: "site.standard.publication",
+          rkey: "self",
+          record: {
+            "$type": "site.standard.publication",
+            name,
+            url,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: res.statusText }));
+        throw new Error(err.message || JSON.stringify(err));
+      }
+
+      const atUri = `at://${session.did}/site.standard.publication/self`;
+      this.shadowRoot.getElementById("pub-input").value = atUri;
+      this._setStatus(`Publication created: ${atUri}`, "success");
+    } catch (err) {
+      this._setStatus(`Failed to create publication: ${err.message}`, "error");
     }
   }
 
